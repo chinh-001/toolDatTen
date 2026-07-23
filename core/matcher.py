@@ -9,7 +9,7 @@ from difflib import SequenceMatcher
 
 from utils.constants import DEFAULT_MATCH_THRESHOLD
 
-# Các thẻ thông số nhiễu thường gặp trong tên file video tải về
+# Các thẻ thông số nhiễu thường gặp trong tên file video tải về  
 NOISE_TAGS = {
     '1080p', '720p', '480p', '360p', '4k', '2k', 'fhd', 'hd', 'sd',
     'bluray', 'webrip', 'webdl', 'web-dl', 'h264', 'x264', 'h265', 'x265',
@@ -18,7 +18,7 @@ NOISE_TAGS = {
 }
 
 
-def _remove_vietnamese_accents(text):
+def _remove_vietnamese_accents(text):  
     """
     Loại bỏ dấu tiếng Việt để so khớp không dấu chuẩn xác.
     """

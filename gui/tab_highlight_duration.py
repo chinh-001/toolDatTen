@@ -120,7 +120,7 @@ class HighlightDurationTab(ttk.Frame):
         btn_parse = ttk.Button(ctrl_row, text="⚡ Phân Tách & Tính Thời Lượng", style='Action.TButton', command=self._on_calculate)
         btn_parse.pack(side='left', padx=(0, 6))
 
-        btn_split_top = ttk.Button(ctrl_row, text="✂️ Cắt Highlight > 1p30s", command=self._on_open_split_dialog)
+        btn_split_top = ttk.Button(ctrl_row, text="✂️ Cắt Highlight Theo Thời Lượng...", command=self._on_open_split_dialog)
         btn_split_top.pack(side='left', padx=(0, 6))
 
         btn_clear = ttk.Button(ctrl_row, text="🧹 Xóa dữ liệu", command=self._on_clear)
@@ -229,10 +229,10 @@ class HighlightDurationTab(ttk.Frame):
         )
         btn_export_long.pack(side='right', padx=(6, 0))
 
-        # Nút Phân Tách Highlight Quá Dài (>1p30s)
+        # Nút Phân Tách Highlight Theo Thời Lượng
         btn_split_long = ttk.Button(
             toolbar,
-            text="✂️ Cắt Highlight Quá Dài (>1p30s)...",
+            text="✂️ Cắt Highlight Theo Thời Lượng...",
             style='Action.TButton',
             command=self._on_open_split_dialog
         )
@@ -276,7 +276,7 @@ class HighlightDurationTab(ttk.Frame):
         self.menu_context.add_command(label="🔗 Copy Link Video", command=self._copy_selected_url)
         self.menu_context.add_command(label="🎬 Copy Chuỗi Highlight", command=self._copy_selected_highlight)
         self.menu_context.add_separator()
-        self.menu_context.add_command(label="✂️ Tách Highlight video này (1p - 1p30s)...", command=self._split_selected_entry)
+        self.menu_context.add_command(label="✂️ Cắt Highlight video này...", command=self._split_selected_entry)
         self.menu_context.add_separator()
         self.menu_context.add_command(label="📄 Copy Cả Dòng (Form Excel)", command=self._copy_selected_row)
 
@@ -507,14 +507,15 @@ class HighlightDurationTab(ttk.Frame):
     # ==========================================
 
     def _on_open_split_dialog(self):
-        """Mở cửa sổ dialog phân tách các đoạn highlight quá dài (>1p30s)."""
-        # Lấy các video có thời lượng > 90s (hoặc tất cả các video trên ngưỡng)
-        target_entries = [e for e in self._entries if e.get('total_seconds', 0) > 90]
-        if not target_entries:
-            if self._long_entries:
-                target_entries = self._long_entries
-            elif self._entries:
-                target_entries = self._entries
+        """Mở cửa sổ dialog phân tách các đoạn highlight theo thời lượng thành phẩm tùy chọn."""
+        # Lấy ngưỡng hiện tại làm mốc thời lượng tối đa
+        thresh = self._threshold_sec.get()
+        # Đặt min_target_sec mặc định là 2/3 của ngưỡng (làm tròn xuống 5 giây)
+        default_min = max(10, (thresh * 2 // 3) // 5 * 5)
+        default_max = thresh
+
+        # Lấy tất cả các video có dữ liệu
+        target_entries = self._entries if self._entries else []
 
         if not target_entries:
             messagebox.showinfo(
@@ -527,8 +528,8 @@ class HighlightDurationTab(ttk.Frame):
             parent=self,
             entries=target_entries,
             log_panel=self.log_panel,
-            min_target_sec=60,
-            max_target_sec=90
+            min_target_sec=default_min,
+            max_target_sec=default_max
         )
 
     def _split_selected_entry(self):
@@ -555,11 +556,16 @@ class HighlightDurationTab(ttk.Frame):
                 'total_seconds': float(vals[6]) if str(vals[6]).replace('.', '', 1).isdigit() else 0.0
             }
 
+        # Lấy ngưỡng hiện tại làm mốc thời lượng tối đa
+        thresh = self._threshold_sec.get()
+        default_min = max(10, (thresh * 2 // 3) // 5 * 5)
+        default_max = thresh
+
         HighlightSplitDialog(
             parent=self,
             entries=[selected_entry],
             log_panel=self.log_panel,
-            min_target_sec=60,
-            max_target_sec=90
+            min_target_sec=default_min,
+            max_target_sec=default_max
         )
 

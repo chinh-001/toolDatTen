@@ -311,21 +311,28 @@ def split_long_entry(entry, min_target_sec=60.0, max_target_sec=90.0, mode='sing
 
 def split_long_entries(entries, min_target_sec=60.0, max_target_sec=90.0, mode='single', max_segment_sec=8.0):
     """
-    Xử lý hàng loạt danh sách video entries.
+    Xử lý hàng loạt danh sách video entries theo thời lượng thành phẩm tùy chọn.
+
+    Args:
+        entries (list[dict]): Danh sách video entries.
+        min_target_sec (float): Thời lượng thành phẩm tối thiểu mong muốn (giây).
+        max_target_sec (float): Thời lượng thành phẩm tối đa mong muốn (giây).
+        mode (str): 'single' (trích 1 dòng duy nhất) hoặc 'split' (chia nhiều phần).
+        max_segment_sec (float): Giới hạn độ dài tối đa của 1 mốc segment (giây).
+
+    Returns:
+        list[dict]: Danh sách video entries sau khi cắt gọt.
     """
     result = []
     for entry in entries:
-        if entry.get('total_seconds', 0) > max_target_sec:
-            sub_list = split_long_entry(
-                entry,
-                min_target_sec=min_target_sec,
-                max_target_sec=max_target_sec,
-                mode=mode,
-                max_segment_sec=max_segment_sec
-            )
-            result.extend(sub_list)
-        else:
-            result.append(entry)
+        sub_list = split_long_entry(
+            entry,
+            min_target_sec=min_target_sec,
+            max_target_sec=max_target_sec,
+            mode=mode,
+            max_segment_sec=max_segment_sec
+        )
+        result.extend(sub_list)
     return result
 
 

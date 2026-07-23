@@ -1,10 +1,10 @@
 """
-HighlightSplitDialog Module - Giao diện cửa sổ phân tách & cắt nhỏ các đoạn Highlight dài (>1p30s).
+HighlightSplitDialog Module - Giao diện cửa sổ phân tách & cắt nhỏ các đoạn Highlight theo thời lượng tùy chọn.
 
 Cho phép người dùng:
-1. Trích xuất đúng 1 Dòng Highlight / Video (độ dài 60s - 90s).
-2. Tùy chỉnh Giới hạn độ dài MỖI ĐOẠN (mặc định tối đa 8 giây) để người xem không bị ngán.
-3. Hoặc tùy chọn Phân tách thành nhiều Phần (Part 1/X, Part 2/X...) nếu muốn.
+1. Thiết lập thời lượng thành phẩm mong muốn trước khi cắt (ví dụ: 30s-45s, 45s-60s, 60s-90s, 90s-120s...).
+2. Trích xuất đúng 1 Dòng Highlight / Video hoặc chia nhiều Phần (Part).
+3. Tùy chỉnh Giới hạn độ dài MỖI ĐOẠN (mặc định tối đa 8 giây) để người xem không bị ngán.
 4. Chỉnh sửa khoảng thời lượng mục tiêu (Min target - Max target) và bấm "⚡ Cắt Lại Highlight".
 5. Sao chép kết quả dạng bảng Excel (TSV) hoặc xuất ra file CSV / TSV.
 """
@@ -25,7 +25,9 @@ class HighlightSplitDialog(tk.Toplevel):
 
     def __init__(self, parent, entries, log_panel=None, min_target_sec=60, max_target_sec=90, mode='single', max_segment_sec=8, **kwargs):
         super().__init__(parent, **kwargs)
-        self.title("✂️ Cắt Gọt Highlight Video (> 1p30s -> 1p đến 1p30s, tối đa 8s/đoạn)")
+        min_str = format_duration_str(min_target_sec)
+        max_str = format_duration_str(max_target_sec)
+        self.title(f"✂️ Cắt Gọt Highlight Video (Thời lượng thành phẩm: {min_str} - {max_str})")
         self.geometry("980x700")
         self.minsize(840, 540)
 
@@ -66,19 +68,26 @@ class HighlightSplitDialog(tk.Toplevel):
         hdr_frame = ttk.Frame(main_frame)
         hdr_frame.pack(fill='x', pady=(0, 8))
 
-        ttk.Label(
+        min_str = format_duration_str(self._min_var.get())
+        max_str = format_duration_str(self._max_var.get())
+        max_seg = self._max_seg_var.get()
+        seg_desc = f"tối đa {max_seg}s" if max_seg > 0 else "không giới hạn"
+
+        self._lbl_header = ttk.Label(
             hdr_frame,
-            text="✂️ Cắt Gọt Highlight Video (Tối đa 8s cho mỗi mốc, tổng 1p - 1p30s)",
+            text=f"✂️ Cắt Gọt Highlight Video (Mỗi mốc {seg_desc}, thành phẩm {min_str} - {max_str})",
             font=('Segoe UI', 12, 'bold'),
             foreground='#2c3e50'
-        ).pack(anchor='w')
+        )
+        self._lbl_header.pack(anchor='w')
 
-        ttk.Label(
+        self._lbl_sub_header = ttk.Label(
             hdr_frame,
-            text="Mỗi mốc highlight được giới hạn tối đa 8 giây để người xem không ngán, tích lũy thành 1 dòng 60s - 90s.",
+            text=f"Thiết lập thời lượng thành phẩm mong muốn bên dưới trước khi cắt. Hiện tại: {min_str} - {max_str}.",
             font=('Segoe UI', 9),
             foreground='#7f8c8d'
-        ).pack(anchor='w', pady=(2, 0))
+        )
+        self._lbl_sub_header.pack(anchor='w', pady=(2, 0))
 
         # 2. Controls & Target Settings Frame
         ctrl_frame = ttk.LabelFrame(
@@ -97,7 +106,7 @@ class HighlightSplitDialog(tk.Toplevel):
 
         r_single = ttk.Radiobutton(
             mode_row,
-            text="🟢 1 Dòng / Video (Cắt về 1p - 1p30s duy nhất)",
+            text="🟢 1 Dòng / Video (Cắt về thời lượng mục tiêu duy nhất)",
             value='single',
             variable=self._mode_var,
             command=self._recalculate_split
@@ -160,10 +169,12 @@ class HighlightSplitDialog(tk.Toplevel):
         preset_frame = ttk.Frame(param_row)
         preset_frame.pack(side='right')
 
-        ttk.Label(preset_frame, text="Mẫu tổng:").pack(side='left', padx=(0, 4))
-        ttk.Button(preset_frame, text="60s - 90s (1p-1p30)", command=lambda: self._set_preset(60, 90)).pack(side='left', padx=2)
-        ttk.Button(preset_frame, text="45s - 60s (45s-1p)", command=lambda: self._set_preset(45, 60)).pack(side='left', padx=2)
-        ttk.Button(preset_frame, text="90s - 120s (1p30-2p)", command=lambda: self._set_preset(90, 120)).pack(side='left', padx=2)
+        ttk.Label(preset_frame, text="Mẫu thành phẩm:").pack(side='left', padx=(0, 4))
+        ttk.Button(preset_frame, text="30s-45s", command=lambda: self._set_preset(30, 45)).pack(side='left', padx=2)
+        ttk.Button(preset_frame, text="45s-60s", command=lambda: self._set_preset(45, 60)).pack(side='left', padx=2)
+        ttk.Button(preset_frame, text="60s-90s (1p-1p30)", command=lambda: self._set_preset(60, 90)).pack(side='left', padx=2)
+        ttk.Button(preset_frame, text="90s-120s (1p30-2p)", command=lambda: self._set_preset(90, 120)).pack(side='left', padx=2)
+        ttk.Button(preset_frame, text="120s-180s (2p-3p)", command=lambda: self._set_preset(120, 180)).pack(side='left', padx=2)
 
         # 3. Main Result Table (Treeview)
         tbl_frame = ttk.Frame(main_frame)
@@ -175,7 +186,7 @@ class HighlightSplitDialog(tk.Toplevel):
         self.tree.heading('stt', text='#')
         self.tree.heading('title', text='Tiêu Đề Video')
         self.tree.heading('url', text='Link Video')
-        self.tree.heading('highlight', text='Chuỗi Highlight Đã Cắt (Mỗi mốc <= 8s)')
+        self.tree.heading('highlight', text='Chuỗi Highlight Đã Cắt')
         self.tree.heading('segments', text='Số đoạn')
         self.tree.heading('duration', text='Thời lượng')
         self.tree.heading('seconds', text='Số giây')
@@ -256,7 +267,7 @@ class HighlightSplitDialog(tk.Toplevel):
         self._recalculate_split()
 
     def _recalculate_split(self):
-        """Thực hiện tính toán cắt lại toàn bộ dữ liệu."""
+        """Thực hiện tính toán cắt lại toàn bộ dữ liệu theo thời lượng thành phẩm tùy chọn."""
         min_sec = self._min_var.get()
         max_sec = self._max_var.get()
         max_seg = self._max_seg_var.get()
@@ -265,6 +276,19 @@ class HighlightSplitDialog(tk.Toplevel):
         if min_sec >= max_sec:
             messagebox.showwarning("Cài đặt sai", "Min giây phải nhỏ hơn Max giây!")
             return
+
+        # Cập nhật tiêu đề cửa sổ và banner header theo cài đặt mới
+        min_str = format_duration_str(min_sec)
+        max_str = format_duration_str(max_sec)
+        seg_desc = f"tối đa {max_seg}s" if max_seg > 0 else "không giới hạn"
+
+        self.title(f"✂️ Cắt Gọt Highlight Video (Thành phẩm: {min_str} - {max_str})")
+        self._lbl_header.configure(
+            text=f"✂️ Cắt Gọt Highlight Video (Mỗi mốc {seg_desc}, thành phẩm {min_str} - {max_str})"
+        )
+        self._lbl_sub_header.configure(
+            text=f"Thiết lập thời lượng thành phẩm mong muốn bên dưới trước khi cắt. Hiện tại: {min_str} - {max_str}."
+        )
 
         self._split_entries = split_long_entries(
             self._original_entries,
