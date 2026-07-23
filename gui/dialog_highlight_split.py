@@ -14,6 +14,7 @@ from tkinter import ttk, filedialog, messagebox
 
 from core.highlight_splitter import (
     split_long_entries,
+    split_long_entry,
     export_split_entries_to_tsv,
     export_split_entries_to_csv,
 )
@@ -156,14 +157,22 @@ class HighlightSplitDialog(tk.Toplevel):
         spin_max = ttk.Spinbox(param_row, from_=10, to=3600, textvariable=self._max_var, width=6)
         spin_max.pack(side='left', padx=(0, 12))
 
-        # Action Button: Recalculate
+        # Action Button: Recalculate All
         btn_recalc = ttk.Button(
             param_row,
-            text="⚡ Cắt Lại Highlight",
+            text="⚡ Cắt Lại Tất Cả",
             style='Action.TButton',
             command=self._recalculate_split
         )
-        btn_recalc.pack(side='left', padx=(0, 16))
+        btn_recalc.pack(side='left', padx=(0, 6))
+
+        # Action Button: Recalculate Selected Only
+        btn_recalc_selected = ttk.Button(
+            param_row,
+            text="🎯 Cắt Lại Hàng Đã Chọn",
+            command=self._recalculate_selected
+        )
+        btn_recalc_selected.pack(side='left', padx=(0, 16))
 
         # Quick Preset Buttons Frame
         preset_frame = ttk.Frame(param_row)
@@ -247,6 +256,8 @@ class HighlightSplitDialog(tk.Toplevel):
     def _build_context_menu(self):
         """Menu chuột phải cho bảng."""
         self.menu_context = tk.Menu(self, tearoff=0)
+        self.menu_context.add_command(label="🎯 Cắt Lại Hàng Đã Chọn (theo Min/Max hiện tại)", command=self._recalculate_selected)
+        self.menu_context.add_separator()
         self.menu_context.add_command(label="📋 Copy Tiêu Đề Video", command=self._copy_selected_title)
         self.menu_context.add_command(label="🔗 Copy Link Video", command=self._copy_selected_url)
         self.menu_context.add_command(label="🎬 Copy Chuỗi Highlight Cắt", command=self._copy_selected_highlight)
@@ -305,6 +316,119 @@ class HighlightSplitDialog(tk.Toplevel):
             seg_desc = f"tối đa {max_seg}s/đoạn" if max_seg > 0 else "không giới hạn mốc"
             self.log_panel.log(
                 f"✂️ Đã cắt phân tách {len(self._original_entries)} video thành {len(self._split_entries)} dòng kết quả [{mode_desc}, {seg_desc}] ({min_sec}s - {max_sec}s).",
+                'success'
+            )
+
+    def _recalculate_selected(self):
+        """Cắt lại chỉ những hàng đã chọn trong bảng theo cài đặt Min/Max hiện tại."""
+        selected_iids = self.tree.selection()
+        if not selected_iids:
+            messagebox.showinfo("Thông báo", "Vui lòng chọn ít nhất 1 hàng trong bảng trước khi cắt lại!")
+            return
+
+        min_sec = self._min_var.get()
+        max_sec = self._max_var.get()
+        max_seg = self._max_seg_var.get()
+        mode = self._mode_var.get()
+
+        if min_sec >= max_sec:
+            messagebox.showwarning("Cài đặt sai", "Min giây phải nhỏ hơn Max giây!")
+            return
+
+        # Chuyển iid (split_1, split_2, ...) thành chỉ mục 0-based trong _split_entries
+        selected_indices = set()
+        for iid in selected_iids:
+            # iid có dạng "split_X" với X là 1-indexed
+            try:
+                idx = int(iid.replace("split_", "")) - 1
+                if 0 <= idx < len(self._split_entries):
+                    selected_indices.add(idx)
+            except ValueError:
+                continue
+
+        if not selected_indices:
+            messagebox.showinfo("Thông báo", "Không tìm thấy dữ liệu hàng đã chọn!")
+            return
+
+        # Thu thập các original entry tương ứng với hàng đã chọn (dùng row_index + original_title)
+        # Mỗi split_entry có trường 'row_index' và 'original_title' liên kết về entry gốc
+        recut_count = 0
+        processed_originals = set()  # Tránh xử lý trùng 1 entry gốc nhiều lần
+
+        new_split_entries = list(self._split_entries)  # Bản sao để thao tác
+
+        for sel_idx in sorted(selected_indices):
+            sel_entry = self._split_entries[sel_idx]
+            row_idx = sel_entry.get('row_index', None)
+            original_title = sel_entry.get('original_title', sel_entry.get('title', ''))
+
+            # Key duy nhất cho 1 entry gốc
+            origin_key = (row_idx, original_title)
+            if origin_key in processed_originals:
+                continue
+            processed_originals.add(origin_key)
+
+            # Tìm entry gốc tương ứng trong _original_entries
+            orig_entry = None
+            for oe in self._original_entries:
+                if oe.get('row_index') == row_idx and oe.get('title', '') == original_title:
+                    orig_entry = oe
+                    break
+
+            if orig_entry is None:
+                # Fallback: dùng highlight_raw từ split_entry để tạo lại entry gốc
+                orig_entry = {
+                    'row_index': row_idx if row_idx is not None else 0,
+                    'title': original_title,
+                    'url': sel_entry.get('url', ''),
+                    'highlight_raw': sel_entry.get('highlight_raw', ''),
+                    'total_seconds': sel_entry.get('total_seconds', 0),
+                }
+
+            # Cắt lại entry gốc này với cài đặt mới
+            new_sub_entries = split_long_entry(
+                orig_entry,
+                min_target_sec=min_sec,
+                max_target_sec=max_sec,
+                mode=mode,
+                max_segment_sec=max_seg
+            )
+
+            # Tìm tất cả các vị trí trong new_split_entries thuộc về origin_key này
+            indices_to_replace = []
+            for i, entry in enumerate(new_split_entries):
+                e_row = entry.get('row_index', None)
+                e_title = entry.get('original_title', entry.get('title', ''))
+                if (e_row, e_title) == origin_key:
+                    indices_to_replace.append(i)
+
+            if indices_to_replace:
+                # Thay thế: xóa các entry cũ, chèn entry mới vào vị trí đầu tiên
+                first_pos = indices_to_replace[0]
+                for i in reversed(indices_to_replace):
+                    new_split_entries.pop(i)
+                for j, new_entry in enumerate(new_sub_entries):
+                    new_split_entries.insert(first_pos + j, new_entry)
+                recut_count += 1
+
+        self._split_entries = new_split_entries
+
+        # Cập nhật header
+        min_str = format_duration_str(min_sec)
+        max_str = format_duration_str(max_sec)
+        seg_desc = f"tối đa {max_seg}s" if max_seg > 0 else "không giới hạn"
+        self._lbl_header.configure(
+            text=f"✂️ Cắt Gọt Highlight Video (Mỗi mốc {seg_desc}, thành phẩm {min_str} - {max_str})"
+        )
+        self._lbl_sub_header.configure(
+            text=f"Đã cắt lại {recut_count} video được chọn. Thành phẩm: {min_str} - {max_str}."
+        )
+
+        self._render_table(min_sec, max_sec)
+
+        if self.log_panel:
+            self.log_panel.log(
+                f"🎯 Đã cắt lại {recut_count} video được chọn theo thời lượng {min_sec}s - {max_sec}s.",
                 'success'
             )
 
