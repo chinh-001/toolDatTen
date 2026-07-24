@@ -269,29 +269,31 @@ def parse_3column_input(raw_text):
     return entries
 
 
-def filter_entries_by_duration(entries, threshold_sec):
+def filter_entries_by_duration(entries, min_sec=60, max_sec=90):
     """
-    Phân loại danh sách entries thành 2 mảng: Dưới ngưỡng và Trên ngưỡng.
+    Phân loại danh sách entries thành 2 mảng: Trong khoảng [min_sec, max_sec] và Ngoài khoảng.
     
     Args:
         entries (list[dict]): Danh sách kết quả từ parse_3column_input.
-        threshold_sec (float/int): Ngưỡng thời lượng tính bằng giây.
+        min_sec (float/int): Thời lượng tối thiểu (giây).
+        max_sec (float/int): Thời lượng tối đa (giây).
         
     Returns:
-        tuple: (short_entries, long_entries)
-            - short_entries: Danh sách video có total_seconds < threshold_sec (Dưới ngưỡng - Màu Xanh)
-            - long_entries: Danh sách video có total_seconds >= threshold_sec (Trên ngưỡng - Màu Đỏ)
+        tuple: (in_range_entries, out_range_entries)
+            - in_range_entries: Trong khoảng [min_sec, max_sec] (MÀU XANH)
+            - out_range_entries: Ngoài khoảng (< min_sec hoặc > max_sec) (MÀU ĐỎ)
     """
-    short_entries = []
-    long_entries = []
+    in_range_entries = []
+    out_range_entries = []
     
     for item in entries:
-        if item['total_seconds'] < threshold_sec:
-            short_entries.append(item)
+        dur = item['total_seconds']
+        if min_sec <= dur <= max_sec:
+            in_range_entries.append(item)
         else:
-            long_entries.append(item)
+            out_range_entries.append(item)
             
-    return short_entries, long_entries
+    return in_range_entries, out_range_entries
 
 
 def export_entries_to_tsv(entries):

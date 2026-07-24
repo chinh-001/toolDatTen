@@ -58,6 +58,41 @@ def slice_segments_by_max_len(segments, max_segment_sec=8.0):
     return sliced
 
 
+def expand_segments_to_min_target(work_segments, min_target_sec, max_segment_sec=8.0):
+    """
+    Nới rộng các mốc phân đoạn để tổng thời lượng đạt tối thiểu min_target_sec.
+    Ưu tiên nới các phân đoạn hiện có up to max_segment_sec, sau đó nới phân đoạn cuối cùng nếu cần.
+    """
+    if not work_segments:
+        return work_segments
+
+    total_seconds = sum(s[2] for s in work_segments)
+    needed = round(min_target_sec - total_seconds, 2)
+    if needed <= 0:
+        return work_segments
+
+    expanded = list(work_segments)
+
+    # Bước 1: Thử nới rộng các segment hiện có chưa đạt max_segment_sec
+    if max_segment_sec and max_segment_sec > 0:
+        for i in range(len(expanded)):
+            if needed <= 0.01:
+                break
+            s, e, d = expanded[i]
+            cap = max_segment_sec - d
+            if cap > 0:
+                add = min(needed, cap)
+                expanded[i] = (s, round(e + add, 2), round(d + add, 2))
+                needed = round(needed - add, 2)
+
+    # Bước 2: Nếu vẫn còn thiếu (chưa đạt min_target_sec), nới rộng phân đoạn cuối cùng
+    if needed > 0.01:
+        s, e, d = expanded[-1]
+        expanded[-1] = (s, round(e + needed, 2), round(d + needed, 2))
+
+    return expanded
+
+
 def trim_to_single_highlight(segments, min_target_sec=60.0, max_target_sec=90.0, max_segment_sec=8.0):
     """
     Trích xuất và cắt đúng 1 chuỗi highlight duy nhất cho 1 video sao cho:
@@ -86,7 +121,12 @@ def trim_to_single_highlight(segments, min_target_sec=60.0, max_target_sec=90.0,
     work_segments = slice_segments_by_max_len(segments, max_segment_sec=max_segment_sec)
     total_seconds = sum(s[2] for s in work_segments)
 
-    # Nếu tổng thời lượng đã <= max_target_sec, giữ các segment đã được chia <= max_segment_sec
+    # Nếu tổng thời lượng < min_target_sec, nới rộng mốc để đạt min_target_sec
+    if total_seconds < min_target_sec and work_segments:
+        work_segments = expand_segments_to_min_target(work_segments, min_target_sec, max_segment_sec)
+        total_seconds = sum(s[2] for s in work_segments)
+
+    # Nếu tổng thời lượng đã <= max_target_sec, giữ các segment đã được nới đủ min_target_sec
     if total_seconds <= max_target_sec:
         cleaned_pairs = [f"{pad_ts(s[0])},{pad_ts(s[1])}" for s in work_segments]
         return {
@@ -120,6 +160,10 @@ def trim_to_single_highlight(segments, min_target_sec=60.0, max_target_sec=90.0,
             break
 
     c_dur = sum(s[2] for s in selected_segs)
+    if c_dur < min_target_sec and selected_segs:
+        selected_segs = expand_segments_to_min_target(selected_segs, min_target_sec, max_segment_sec)
+        c_dur = sum(s[2] for s in selected_segs)
+
     cleaned_pairs = [f"{pad_ts(s[0])},{pad_ts(s[1])}" for s in selected_segs]
 
     return {
@@ -241,15 +285,23 @@ def split_long_entry(entry, min_target_sec=60.0, max_target_sec=90.0, mode='sing
         list[dict]: Danh sách sub-entries.
     """
     raw_hl = entry.get('highlight_raw', '')
+    if not raw_hl and entry.get('highlight_clean'):
+        raw_hl = entry.get('highlight_clean')
+
     parsed_hl = parse_highlight_segments(raw_hl)
     segments = parsed_hl['segments']
 
-    if not segments:
-        return [entry]
-
-    base_title = entry.get('title', 'Video')
+    base_title = entry.get('original_title', entry.get('title', 'Video'))
     url = entry.get('url', '')
     row_idx = entry.get('row_index', 0)
+    orig_id = entry.get('_orig_id', row_idx)
+
+    if not segments:
+        empty_entry = dict(entry)
+        empty_entry['_orig_id'] = orig_id
+        empty_entry['original_title'] = base_title
+        empty_entry['highlight_raw'] = raw_hl
+        return [empty_entry]
 
     if mode == 'single':
         chunk = trim_to_single_highlight(
@@ -259,6 +311,7 @@ def split_long_entry(entry, min_target_sec=60.0, max_target_sec=90.0, mode='sing
             max_segment_sec=max_segment_sec
         )
         sub_entry = {
+            '_orig_id': orig_id,
             'row_index': row_idx,
             'original_title': base_title,
             'title': base_title,
@@ -290,6 +343,7 @@ def split_long_entry(entry, min_target_sec=60.0, max_target_sec=90.0, mode='sing
         title_with_part = f"{base_title} (Phần {part_idx}/{total_parts})" if total_parts > 1 else base_title
 
         sub_entry = {
+            '_orig_id': orig_id,
             'row_index': row_idx,
             'original_title': base_title,
             'title': title_with_part,

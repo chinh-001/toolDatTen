@@ -24,7 +24,7 @@ from core.highlight_duration_calculator import format_duration_str
 class HighlightSplitDialog(tk.Toplevel):
     """Cửa sổ Modal Phân Tách & Cắt Highlight quá dài."""
 
-    def __init__(self, parent, entries, log_panel=None, min_target_sec=60, max_target_sec=90, mode='single', max_segment_sec=8, **kwargs):
+    def __init__(self, parent, entries, log_panel=None, min_target_sec=60, max_target_sec=90, mode='single', max_segment_sec=8, on_apply_callback=None, **kwargs):
         super().__init__(parent, **kwargs)
         min_str = format_duration_str(min_target_sec)
         max_str = format_duration_str(max_target_sec)
@@ -34,7 +34,17 @@ class HighlightSplitDialog(tk.Toplevel):
 
         self.parent = parent
         self.log_panel = log_panel
-        self._original_entries = list(entries)
+        self.on_apply_callback = on_apply_callback
+        
+        # Gán _orig_id duy nhất cho từng video gốc để liên kết chính xác
+        self._original_entries = []
+        for idx, item in enumerate(entries, 1):
+            entry_copy = dict(item)
+            if '_orig_id' not in entry_copy:
+                entry_copy['_orig_id'] = idx
+            if 'original_title' not in entry_copy:
+                entry_copy['original_title'] = entry_copy.get('title', '')
+            self._original_entries.append(entry_copy)
 
         # Target range, Max segment & Mode variables
         self._min_var = tk.IntVar(value=min_target_sec)
@@ -50,6 +60,51 @@ class HighlightSplitDialog(tk.Toplevel):
         # Grab focus as modal dialog
         self.transient(parent)
         self.grab_set()
+
+    def _on_apply_click(self):
+        """Áp dụng kết quả cắt trở lại bảng chính."""
+        if not self._split_entries:
+            messagebox.showinfo("Thông báo", "Hiện chưa có kết quả cắt nào!")
+            return
+
+        if self.on_apply_callback:
+            self.on_apply_callback(self._split_entries)
+            messagebox.showinfo(
+                "Thành công",
+                f"Đã áp dụng {len(self._split_entries)} dòng dữ liệu highlight đã cắt vào bảng chính!"
+            )
+            self.destroy()
+        else:
+            self._copy_split_tsv()
+
+    def _get_current_params(self):
+        """Lấy chuẩn xác các thông số từ Spinbox/Widgets, đồng bộ lại với Variables."""
+        # Sync min
+        try:
+            raw_min = self.spin_min.get().strip() if hasattr(self, 'spin_min') else ""
+            min_sec = int(raw_min) if raw_min.isdigit() else self._min_var.get()
+        except (ValueError, AttributeError):
+            min_sec = self._min_var.get()
+        self._min_var.set(min_sec)
+
+        # Sync max
+        try:
+            raw_max = self.spin_max.get().strip() if hasattr(self, 'spin_max') else ""
+            max_sec = int(raw_max) if raw_max.isdigit() else self._max_var.get()
+        except (ValueError, AttributeError):
+            max_sec = self._max_var.get()
+        self._max_var.set(max_sec)
+
+        # Sync max segment
+        try:
+            raw_seg = self.spin_seg.get().strip() if hasattr(self, 'spin_seg') else ""
+            max_seg = int(raw_seg) if raw_seg.isdigit() else self._max_seg_var.get()
+        except (ValueError, AttributeError):
+            max_seg = self._max_seg_var.get()
+        self._max_seg_var.set(max_seg)
+
+        mode = self._mode_var.get()
+        return min_sec, max_sec, max_seg, mode
 
     def _center_window(self):
         """Đặt cửa sổ ở vị trí trung tâm."""
@@ -130,8 +185,9 @@ class HighlightSplitDialog(tk.Toplevel):
         seg_row.pack(fill='x', pady=(0, 6))
 
         ttk.Label(seg_row, text="✂️ Giới hạn mỗi đoạn (Max mốc):", font=('Segoe UI', 9, 'bold')).pack(side='left', padx=(0, 4))
-        spin_seg = ttk.Spinbox(seg_row, from_=0, to=300, textvariable=self._max_seg_var, width=5)
-        spin_seg.pack(side='left', padx=(0, 4))
+        self.spin_seg = ttk.Spinbox(seg_row, from_=0, to=300, textvariable=self._max_seg_var, width=5)
+        self.spin_seg.pack(side='left', padx=(0, 4))
+        self.spin_seg.bind("<FocusOut>", lambda e: self._get_current_params())
 
         ttk.Label(seg_row, text="giây", font=('Segoe UI', 9)).pack(side='left', padx=(0, 16))
 
@@ -150,12 +206,14 @@ class HighlightSplitDialog(tk.Toplevel):
         param_row.pack(fill='x')
 
         ttk.Label(param_row, text="⏱️ Tổng nhỏ nhất (Min):", font=('Segoe UI', 9, 'bold')).pack(side='left', padx=(0, 4))
-        spin_min = ttk.Spinbox(param_row, from_=10, to=3600, textvariable=self._min_var, width=6)
-        spin_min.pack(side='left', padx=(0, 12))
+        self.spin_min = ttk.Spinbox(param_row, from_=10, to=3600, textvariable=self._min_var, width=6)
+        self.spin_min.pack(side='left', padx=(0, 12))
+        self.spin_min.bind("<FocusOut>", lambda e: self._get_current_params())
 
         ttk.Label(param_row, text="⏱️ Tổng lớn nhất (Max):", font=('Segoe UI', 9, 'bold')).pack(side='left', padx=(0, 4))
-        spin_max = ttk.Spinbox(param_row, from_=10, to=3600, textvariable=self._max_var, width=6)
-        spin_max.pack(side='left', padx=(0, 12))
+        self.spin_max = ttk.Spinbox(param_row, from_=10, to=3600, textvariable=self._max_var, width=6)
+        self.spin_max.pack(side='left', padx=(0, 12))
+        self.spin_max.bind("<FocusOut>", lambda e: self._get_current_params())
 
         # Action Button: Recalculate All
         btn_recalc = ttk.Button(
@@ -172,7 +230,15 @@ class HighlightSplitDialog(tk.Toplevel):
             text="🎯 Cắt Lại Hàng Đã Chọn",
             command=self._recalculate_selected
         )
-        btn_recalc_selected.pack(side='left', padx=(0, 16))
+        btn_recalc_selected.pack(side='left', padx=(0, 6))
+
+        # Action Button: Recalculate Out-of-range Rows Only
+        btn_recalc_out = ttk.Button(
+            param_row,
+            text="🔴 Cắt Lại Hàng Ngoài Khoảng",
+            command=self._recalculate_out_of_range
+        )
+        btn_recalc_out.pack(side='left', padx=(0, 16))
 
         # Quick Preset Buttons Frame
         preset_frame = ttk.Frame(param_row)
@@ -248,15 +314,23 @@ class HighlightSplitDialog(tk.Toplevel):
         btn_copy = ttk.Button(
             bot_frame,
             text="📋 Copy Bảng Đã Cắt (Form Excel)",
-            style='Action.TButton',
             command=self._copy_split_tsv
         )
-        btn_copy.pack(side='right')
+        btn_copy.pack(side='right', padx=(6, 0))
+
+        btn_apply = ttk.Button(
+            bot_frame,
+            text="✅ Áp Dụng Vào Bảng Chính",
+            style='Action.TButton',
+            command=self._on_apply_click
+        )
+        btn_apply.pack(side='right')
 
     def _build_context_menu(self):
         """Menu chuột phải cho bảng."""
         self.menu_context = tk.Menu(self, tearoff=0)
         self.menu_context.add_command(label="🎯 Cắt Lại Hàng Đã Chọn (theo Min/Max hiện tại)", command=self._recalculate_selected)
+        self.menu_context.add_command(label="🔴 Cắt Lại Các Hàng NGOÀI KHOẢNG", command=self._recalculate_out_of_range)
         self.menu_context.add_separator()
         self.menu_context.add_command(label="📋 Copy Tiêu Đề Video", command=self._copy_selected_title)
         self.menu_context.add_command(label="🔗 Copy Link Video", command=self._copy_selected_url)
@@ -268,21 +342,24 @@ class HighlightSplitDialog(tk.Toplevel):
 
     def _set_preset(self, min_val, max_val):
         """Đặt mẫu nhanh cho khoảng thời gian và tính lại."""
+        self.spin_min.delete(0, 'end')
+        self.spin_min.insert(0, str(min_val))
+        self.spin_max.delete(0, 'end')
+        self.spin_max.insert(0, str(max_val))
         self._min_var.set(min_val)
         self._max_var.set(max_val)
         self._recalculate_split()
 
     def _set_max_seg(self, val):
         """Đặt mẫu nhanh độ dài tối đa 1 phân đoạn."""
+        self.spin_seg.delete(0, 'end')
+        self.spin_seg.insert(0, str(val))
         self._max_seg_var.set(val)
         self._recalculate_split()
 
     def _recalculate_split(self):
         """Thực hiện tính toán cắt lại toàn bộ dữ liệu theo thời lượng thành phẩm tùy chọn."""
-        min_sec = self._min_var.get()
-        max_sec = self._max_var.get()
-        max_seg = self._max_seg_var.get()
-        mode = self._mode_var.get()
+        min_sec, max_sec, max_seg, mode = self._get_current_params()
 
         if min_sec >= max_sec:
             messagebox.showwarning("Cài đặt sai", "Min giây phải nhỏ hơn Max giây!")
@@ -326,19 +403,14 @@ class HighlightSplitDialog(tk.Toplevel):
             messagebox.showinfo("Thông báo", "Vui lòng chọn ít nhất 1 hàng trong bảng trước khi cắt lại!")
             return
 
-        min_sec = self._min_var.get()
-        max_sec = self._max_var.get()
-        max_seg = self._max_seg_var.get()
-        mode = self._mode_var.get()
+        min_sec, max_sec, max_seg, mode = self._get_current_params()
 
         if min_sec >= max_sec:
             messagebox.showwarning("Cài đặt sai", "Min giây phải nhỏ hơn Max giây!")
             return
 
-        # Chuyển iid (split_1, split_2, ...) thành chỉ mục 0-based trong _split_entries
         selected_indices = set()
         for iid in selected_iids:
-            # iid có dạng "split_X" với X là 1-indexed
             try:
                 idx = int(iid.replace("split_", "")) - 1
                 if 0 <= idx < len(self._split_entries):
@@ -350,38 +422,34 @@ class HighlightSplitDialog(tk.Toplevel):
             messagebox.showinfo("Thông báo", "Không tìm thấy dữ liệu hàng đã chọn!")
             return
 
-        # Thu thập các original entry tương ứng với hàng đã chọn (dùng row_index + original_title)
-        # Mỗi split_entry có trường 'row_index' và 'original_title' liên kết về entry gốc
         recut_count = 0
-        processed_originals = set()  # Tránh xử lý trùng 1 entry gốc nhiều lần
-
-        new_split_entries = list(self._split_entries)  # Bản sao để thao tác
+        processed_orig_ids = set()
+        new_split_entries = list(self._split_entries)
 
         for sel_idx in sorted(selected_indices):
             sel_entry = self._split_entries[sel_idx]
-            row_idx = sel_entry.get('row_index', None)
+            orig_id = sel_entry.get('_orig_id')
             original_title = sel_entry.get('original_title', sel_entry.get('title', ''))
 
-            # Key duy nhất cho 1 entry gốc
-            origin_key = (row_idx, original_title)
-            if origin_key in processed_originals:
+            if orig_id in processed_orig_ids:
                 continue
-            processed_originals.add(origin_key)
+            processed_orig_ids.add(orig_id)
 
-            # Tìm entry gốc tương ứng trong _original_entries
+            # Tìm entry gốc tương ứng trong _original_entries theo _orig_id
             orig_entry = None
             for oe in self._original_entries:
-                if oe.get('row_index') == row_idx and oe.get('title', '') == original_title:
+                if oe.get('_orig_id') == orig_id or (orig_id is None and oe.get('title') == original_title):
                     orig_entry = oe
                     break
 
             if orig_entry is None:
-                # Fallback: dùng highlight_raw từ split_entry để tạo lại entry gốc
                 orig_entry = {
-                    'row_index': row_idx if row_idx is not None else 0,
+                    '_orig_id': orig_id if orig_id is not None else 0,
+                    'row_index': sel_entry.get('row_index', 0),
                     'title': original_title,
+                    'original_title': original_title,
                     'url': sel_entry.get('url', ''),
-                    'highlight_raw': sel_entry.get('highlight_raw', ''),
+                    'highlight_raw': sel_entry.get('highlight_raw', sel_entry.get('highlight_clean', '')),
                     'total_seconds': sel_entry.get('total_seconds', 0),
                 }
 
@@ -394,16 +462,15 @@ class HighlightSplitDialog(tk.Toplevel):
                 max_segment_sec=max_seg
             )
 
-            # Tìm tất cả các vị trí trong new_split_entries thuộc về origin_key này
+            # Tìm tất cả vị trí trong new_split_entries khớp với orig_id hoặc original_title này
             indices_to_replace = []
             for i, entry in enumerate(new_split_entries):
-                e_row = entry.get('row_index', None)
+                e_orig_id = entry.get('_orig_id')
                 e_title = entry.get('original_title', entry.get('title', ''))
-                if (e_row, e_title) == origin_key:
+                if (orig_id is not None and e_orig_id == orig_id) or (orig_id is None and e_title == original_title):
                     indices_to_replace.append(i)
 
             if indices_to_replace:
-                # Thay thế: xóa các entry cũ, chèn entry mới vào vị trí đầu tiên
                 first_pos = indices_to_replace[0]
                 for i in reversed(indices_to_replace):
                     new_split_entries.pop(i)
@@ -429,6 +496,100 @@ class HighlightSplitDialog(tk.Toplevel):
         if self.log_panel:
             self.log_panel.log(
                 f"🎯 Đã cắt lại {recut_count} video được chọn theo thời lượng {min_sec}s - {max_sec}s.",
+                'success'
+            )
+
+    def _recalculate_out_of_range(self):
+        """Cắt lại chỉ những hàng ngoài khoảng (total_seconds < min_sec hoặc > max_sec)."""
+        min_sec, max_sec, max_seg, mode = self._get_current_params()
+
+        if min_sec >= max_sec:
+            messagebox.showwarning("Cài đặt sai", "Min giây phải nhỏ hơn Max giây!")
+            return
+
+        out_indices = []
+        for idx, entry in enumerate(self._split_entries):
+            dur = entry['total_seconds']
+            if dur < min_sec or dur > max_sec:
+                out_indices.append(idx)
+
+        if not out_indices:
+            messagebox.showinfo(
+                "Thông báo",
+                f"Tất cả các hàng đều đang nằm trong khoảng [{min_sec}s - {max_sec}s]. Không có hàng nào ngoài khoảng!"
+            )
+            return
+
+        recut_count = 0
+        processed_orig_ids = set()
+        new_split_entries = list(self._split_entries)
+
+        for sel_idx in sorted(out_indices):
+            sel_entry = self._split_entries[sel_idx]
+            orig_id = sel_entry.get('_orig_id')
+            original_title = sel_entry.get('original_title', sel_entry.get('title', ''))
+
+            if orig_id in processed_orig_ids:
+                continue
+            processed_orig_ids.add(orig_id)
+
+            orig_entry = None
+            for oe in self._original_entries:
+                if oe.get('_orig_id') == orig_id or (orig_id is None and oe.get('title') == original_title):
+                    orig_entry = oe
+                    break
+
+            if orig_entry is None:
+                orig_entry = {
+                    '_orig_id': orig_id if orig_id is not None else 0,
+                    'row_index': sel_entry.get('row_index', 0),
+                    'title': original_title,
+                    'original_title': original_title,
+                    'url': sel_entry.get('url', ''),
+                    'highlight_raw': sel_entry.get('highlight_raw', sel_entry.get('highlight_clean', '')),
+                    'total_seconds': sel_entry.get('total_seconds', 0),
+                }
+
+            new_sub_entries = split_long_entry(
+                orig_entry,
+                min_target_sec=min_sec,
+                max_target_sec=max_sec,
+                mode=mode,
+                max_segment_sec=max_seg
+            )
+
+            indices_to_replace = []
+            for i, entry in enumerate(new_split_entries):
+                e_orig_id = entry.get('_orig_id')
+                e_title = entry.get('original_title', entry.get('title', ''))
+                if (orig_id is not None and e_orig_id == orig_id) or (orig_id is None and e_title == original_title):
+                    indices_to_replace.append(i)
+
+            if indices_to_replace:
+                first_pos = indices_to_replace[0]
+                for i in reversed(indices_to_replace):
+                    new_split_entries.pop(i)
+                for j, new_entry in enumerate(new_sub_entries):
+                    new_split_entries.insert(first_pos + j, new_entry)
+                recut_count += 1
+
+        self._split_entries = new_split_entries
+
+        min_str = format_duration_str(min_sec)
+        max_str = format_duration_str(max_sec)
+        seg_desc = f"tối đa {max_seg}s" if max_seg > 0 else "không giới hạn"
+        self._lbl_header.configure(
+            text=f"✂️ Cắt Gọt Highlight Video (Mỗi mốc {seg_desc}, thành phẩm {min_str} - {max_str})"
+        )
+        self._lbl_sub_header.configure(
+            text=f"Đã cắt lại {recut_count} video ngoài khoảng (< {min_sec}s hoặc > {max_sec}s). Thành phẩm: {min_str} - {max_str}."
+        )
+
+        self._render_table(min_sec, max_sec)
+
+        if self.log_panel:
+            self.log_panel.log(
+                f"🔴 Đã cắt lại {recut_count} video ngoài khoảng [{min_sec}s - {max_sec}s].",
                 'success'
             )
 
