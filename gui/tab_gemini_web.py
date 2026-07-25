@@ -10,7 +10,7 @@ import threading
 from core.parser import parse_raw_input
 from core.gemini_web_automation import open_interactive_browser, get_default_user_data_dir
 from core.gemini_web_handler import GeminiWebBatchWorker
-from core.profile_manager import get_all_profiles, resolve_profile_dir, create_new_app_profile
+from core.profile_manager import get_all_profiles, resolve_profile_info, create_new_app_profile
 from gui.widgets import HighlightResultTable, ErrorLogPanel
 from utils.config import load_setting, save_setting
 from utils.constants import DEFAULT_HIGHLIGHT_PROMPT
@@ -359,18 +359,17 @@ class GeminiWebTab(ttk.Frame):
         Lấy thông tin profile đang chọn.
 
         Returns:
-            tuple: (profile_id, profile_label, user_data_dir)
+            tuple: (profile_id, profile_label, user_data_dir, profile_folder)
         """
         selected_label = self.cb_profile.get()
         prof_dict = self._profiles_map.get(selected_label)
 
         if prof_dict:
-            prof_id = prof_dict["id"]
-            user_data_dir = resolve_profile_dir(prof_id)
-            return prof_id, selected_label, user_data_dir
+            prof_info = resolve_profile_info(prof_dict["id"])
+            return prof_info["id"], prof_info["label"], prof_info["user_data_dir"], prof_info.get("folder", "Default")
         else:
-            default_dir = get_default_user_data_dir()
-            return "default", "Default", default_dir
+            prof_info = resolve_profile_info("auto_detect")
+            return prof_info["id"], prof_info["label"], prof_info["user_data_dir"], prof_info.get("folder", "Default")
 
     def _on_toggle_limit_widgets(self):
         """Ẩn/hiện entry thời lượng tối đa."""
@@ -385,11 +384,11 @@ class GeminiWebTab(ttk.Frame):
 
     def _on_open_web_login(self):
         """Mở trình duyệt thực để người dùng xem/mở Gemini Web với Profile chọn."""
-        prof_id, prof_label, user_data_dir = self._get_selected_profile_info()
+        prof_id, prof_label, user_data_dir, profile_folder = self._get_selected_profile_info()
         save_setting('gemini_web_profile', prof_label)
         self.log_panel.log(f"🌐 Đang mở trang Gemini Web cho [{prof_label}]...", 'info')
-        self.log_panel.log(f"💡 Hướng dẫn: Nếu cửa sổ trình duyệt hiện ra chưa đăng nhập, bạn chỉ cần bấm 'Đăng nhập' (Sign In) tài khoản Google tương ứng ONCE. Trạng thái đăng nhập sẽ được lưu VĨNH VIỄN cho Profile này!", 'warning')
-        open_interactive_browser(user_data_dir=user_data_dir, headless=False)
+        self.log_panel.log(f"💡 Hướng dẫn: Trình duyệt mở bằng Profile Chrome cách ly. Trạng thái đăng nhập Google sẽ tự động được sử dụng!", 'warning')
+        open_interactive_browser(user_data_dir=user_data_dir, profile_folder=profile_folder, headless=False)
 
     def _on_parse_and_sort(self):
         """Phân tách dữ liệu video thô."""
@@ -441,7 +440,7 @@ class GeminiWebTab(ttk.Frame):
         except ValueError:
             max_min_val = 2.0
 
-        prof_id, prof_label, user_data_dir = self._get_selected_profile_info()
+        prof_id, prof_label, user_data_dir, profile_folder = self._get_selected_profile_info()
 
         # Lưu config
         save_setting('gemini_web_prompt', prompt_tpl)
@@ -457,6 +456,7 @@ class GeminiWebTab(ttk.Frame):
             'enable_limit': self.enable_limit_var.get(),
             'max_minutes': max_min_val,
             'user_data_dir': user_data_dir,
+            'profile_folder': profile_folder,
             'profile_label': prof_label
         }
 
@@ -502,7 +502,7 @@ class GeminiWebTab(ttk.Frame):
             timeout_val = 60
             max_min_val = 2.0
 
-        prof_id, prof_label, user_data_dir = self._get_selected_profile_info()
+        prof_id, prof_label, user_data_dir, profile_folder = self._get_selected_profile_info()
         save_setting('gemini_web_profile', prof_label)
 
         options = {
@@ -511,6 +511,7 @@ class GeminiWebTab(ttk.Frame):
             'enable_limit': self.enable_limit_var.get(),
             'max_minutes': max_min_val,
             'user_data_dir': user_data_dir,
+            'profile_folder': profile_folder,
             'profile_label': prof_label
         }
 

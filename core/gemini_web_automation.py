@@ -7,6 +7,7 @@ import os
 import sys
 import time
 import threading
+from core.profile_copier import prepare_isolated_chrome_profile
 
 
 def get_default_user_data_dir():
@@ -45,13 +46,14 @@ def find_system_chrome_path():
     return None
 
 
-def open_interactive_browser(user_data_dir=None, headless=False, chrome_path=None):
+def open_interactive_browser(user_data_dir=None, profile_folder="Default", headless=False, chrome_path=None):
     """
-    Mở trình duyệt thực để người dùng đăng nhập tài khoản Google hoặc kiểm tra thủ công.
+    Mở trình duyệt thực để người dùng xem hoặc đăng nhập tài khoản Google.
     Chạy ở thread riêng để không làm treo UI chính.
 
     Args:
-        user_data_dir (str, optional): Thư mục profile.
+        user_data_dir (str, optional): Thư mục User Data hoặc app profile.
+        profile_folder (str): Tên thư mục profile ("Default", "Profile 1", ...).
         headless (bool): Bật/tắt chế độ ẩn. Mặc định False để người dùng thấy giao diện.
         chrome_path (str, optional): Đường dẫn file thực thi Chrome nếu có.
     """
@@ -63,26 +65,58 @@ def open_interactive_browser(user_data_dir=None, headless=False, chrome_path=Non
 
     def run():
         try:
-            _cleanup_browser_locks(user_data_dir)
+            from core.profile_manager import is_system_chrome_running
+            local_state_exists = os.path.exists(os.path.join(user_data_dir, "Local State"))
+
+            # Nếu là Chrome hệ thống và Chrome KHÔNG chạy -> Mở trực tiếp thư mục gốc không qua temp
+            if local_state_exists and not is_system_chrome_running():
+                target_user_data = user_data_dir
+                target_folder = profile_folder
+                skipped_files = []
+            elif local_state_exists:
+                target_user_data, target_folder, skipped_files = prepare_isolated_chrome_profile(user_data_dir, profile_folder)
+            else:
+                # App Profile riêng biệt
+                target_user_data = user_data_dir
+                target_folder = "Default"
+                skipped_files = []
+
+            _cleanup_browser_locks(target_user_data)
+
             from playwright.sync_api import sync_playwright
             with sync_playwright() as p:
                 launch_args = [
-                    "--no-sandbox",
+                    f"--profile-directory={target_folder}",
+                    "--disable-blink-features=AutomationControlled",
                     "--no-first-run",
                     "--no-default-browser-check",
                     "--disable-search-engine-choice-screen",
                     "--disable-features=LockProfileCookieDatabase",
+                    "--disable-infobars",
                 ]
                 kwargs = {
-                    "user_data_dir": user_data_dir,
+                    "user_data_dir": target_user_data,
                     "headless": headless,
                     "args": launch_args,
-                    "ignore_default_args": ["--disable-sync"],
+                    "channel": "chrome",
+                    "ignore_default_args": ["--enable-automation", "--disable-sync"],
                 }
                 if chrome_path and os.path.exists(chrome_path):
                     kwargs["executable_path"] = chrome_path
 
-                context = p.chromium.launch_persistent_context(**kwargs)
+                try:
+                    context = p.chromium.launch_persistent_context(**kwargs)
+                except Exception:
+                    kwargs.pop("channel", None)
+                    context = p.chromium.launch_persistent_context(**kwargs)
+
+                # Ẩn cờ navigator.webdriver để Google Accounts không báo lỗi "Trình duyệt không an toàn"
+                context.add_init_script("""
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => undefined
+                    });
+                """)
+
                 page = context.pages[0] if context.pages else context.new_page()
                 page.goto("https://gemini.google.com/app", timeout=60000)
                 
@@ -98,20 +132,24 @@ def open_interactive_browser(user_data_dir=None, headless=False, chrome_path=Non
 class GeminiWebController:
     """Bộ điều khiển Playwright tương tác trực tiếp với Gemini Web."""
 
-    def __init__(self, user_data_dir=None, headless=True, timeout_seconds=60, chrome_path=None):
+    def __init__(self, user_data_dir=None, profile_folder="Default", headless=True, timeout_seconds=60, chrome_path=None):
         """
         Khởi tạo bộ điều khiển.
 
         Args:
             user_data_dir (str, optional): Thư mục profile lưu session đăng nhập.
+            profile_folder (str): Tên thư mục profile ("Default", "Profile 1", ...).
             headless (bool): Chạy ẩn trình duyệt hay hiện giao diện.
             timeout_seconds (int): Thời gian chờ tối đa cho mỗi phản hồi (giây).
             chrome_path (str, optional): Đường dẫn file thực thi Chrome.
         """
-        self.user_data_dir = user_data_dir or get_default_user_data_dir()
+        self.raw_user_data_dir = user_data_dir or get_default_user_data_dir()
+        self.profile_folder = profile_folder or "Default"
+        self.user_data_dir = self.raw_user_data_dir
         self.headless = headless
         self.timeout_seconds = timeout_seconds
         self.chrome_path = chrome_path or find_system_chrome_path()
+        self.skipped_files = []
 
         self._playwright = None
         self._context = None
@@ -123,30 +161,66 @@ class GeminiWebController:
         Khởi chạy trình duyệt và mở trang Gemini Web.
 
         Returns:
-            tuple: (bool, str) -> (Thành công hay không, Thông báo chi tiết)
+            tuple: (bool, str, str) -> (Thành công hay không, Thông báo người dùng, Log dev chi tiết)
         """
         try:
+            from core.profile_manager import is_system_chrome_running
+            local_state_exists = os.path.exists(os.path.join(self.raw_user_data_dir, "Local State"))
+
+            # Nếu là Chrome hệ thống và Chrome KHÔNG đang mở -> Dùng trực tiếp 100% chính xác
+            if local_state_exists and not is_system_chrome_running():
+                self.user_data_dir = self.raw_user_data_dir
+                target_folder = self.profile_folder
+                self.skipped_files = []
+            elif local_state_exists:
+                # Nếu Chrome đang mở -> Dùng profile cách ly
+                isolated_dir, folder_name, skipped_files = prepare_isolated_chrome_profile(self.raw_user_data_dir, self.profile_folder)
+                self.user_data_dir = isolated_dir
+                target_folder = folder_name
+                self.skipped_files = skipped_files
+            else:
+                # App Profile riêng biệt
+                self.user_data_dir = self.raw_user_data_dir
+                target_folder = "Default"
+                self.skipped_files = []
+
             _cleanup_browser_locks(self.user_data_dir)
+
             from playwright.sync_api import sync_playwright
             self._playwright = sync_playwright().start()
 
             launch_args = [
-                "--no-sandbox",
+                f"--profile-directory={target_folder}",
+                "--disable-blink-features=AutomationControlled",
                 "--no-first-run",
                 "--no-default-browser-check",
                 "--disable-search-engine-choice-screen",
                 "--disable-features=LockProfileCookieDatabase",
+                "--disable-infobars",
             ]
             kwargs = {
                 "user_data_dir": self.user_data_dir,
                 "headless": self.headless,
                 "args": launch_args,
-                "ignore_default_args": ["--disable-sync"],
+                "channel": "chrome",
+                "ignore_default_args": ["--enable-automation", "--disable-sync"],
             }
             if self.chrome_path and os.path.exists(self.chrome_path):
                 kwargs["executable_path"] = self.chrome_path
 
-            self._context = self._playwright.chromium.launch_persistent_context(**kwargs)
+            try:
+                self._context = self._playwright.chromium.launch_persistent_context(**kwargs)
+            except Exception:
+                kwargs.pop("channel", None)
+                self._context = self._playwright.chromium.launch_persistent_context(**kwargs)
+
+            # Ẩn cờ navigator.webdriver để Google Accounts không báo lỗi "Trình duyệt không an toàn"
+            self._context.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+            """)
+
             self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
             
             # Đặt timeout chuẩn cho các thao tác
@@ -157,65 +231,114 @@ class GeminiWebController:
             self._page.wait_for_timeout(2000)
             
             # Pre-check kiểm tra phiên đăng nhập ngay sau khi tải trang
-            is_valid_login, login_err = self.verify_login_session()
+            is_valid_login, user_msg, dev_log = self.verify_login_session()
             if not is_valid_login:
                 self.close()
-                return False, login_err
+                return False, user_msg, dev_log
 
             self._is_running = True
-            return True, "Kết nối Gemini Web thành công."
+            return True, "Kết nối Gemini Web thành công.", dev_log
         except Exception as e:
+            import traceback
+            dev_log = f"Exception khi khởi chạy Playwright:\n{traceback.format_exc()}"
             self.close()
-            return False, f"Lỗi khởi chạy trình duyệt: {str(e)}"
+            return False, f"Lỗi khởi chạy trình duyệt: {str(e)}", dev_log
 
     def verify_login_session(self):
         """
-        Pre-check phiên đăng nhập Gemini Web ngay sau khi mở trang.
-        Nếu phát hiện nút "Đăng nhập" hoặc không tìm thấy ô nhập prompt, trả về lỗi ngay.
+        Pre-check phiên đăng nhập Gemini Web và tạo log chẩn đoán chi tiết cho Dev.
 
         Returns:
-            tuple: (bool, str) -> (Đã đăng nhập hợp lệ hay chưa, Thông báo lỗi chi tiết nếu chưa)
+            tuple: (bool, str, str) -> (Đã đăng nhập hợp lệ hay chưa, Thông báo người dùng, Log dev chi tiết)
         """
+        dev_logs = []
+        dev_logs.append("==================================================")
+        dev_logs.append("CHẨN ĐOÁN PHIÊN ĐĂNG NHẬP GEMINI WEB")
+        dev_logs.append("==================================================")
+        dev_logs.append(f"- Profile Folder: {self.profile_folder}")
+        dev_logs.append(f"- Thư mục gốc User Data: {self.raw_user_data_dir}")
+        dev_logs.append(f"- Thư mục cách ly Playwright: {self.user_data_dir}")
+        dev_logs.append(f"- Chế độ Trình duyệt: {'Headless (Ẩn)' if self.headless else 'Interactive (Hiện UI)'}")
+
+        # Ghi nhận thông tin file session bị khóa
+        skipped = getattr(self, 'skipped_files', [])
+        if skipped:
+            dev_logs.append(f"\n⚠️ CẢNH BÁO FILE BỊ KHÓA DO CHROME ĐANG CHẠY ({len(skipped)} files):")
+            for sf in skipped[:10]:
+                dev_logs.append(f"  • {sf}")
+            if any("Cookies" in sf for sf in skipped):
+                dev_logs.append("  ➜ CỰC KỲ QUAN TRỌNG: File Session 'Cookies' bị Chrome khóa. Session đăng nhập KHÔNG THỂ sao chép sang Playwright khi Chrome chưa đóng!")
+
         if not self._page or self._page.is_closed():
-            return False, "Phiên đăng nhập Gemini không hợp lệ - cần đăng nhập lại profile"
+            dev_logs.append("\n❌ TRẠNG THÁI: Page Playwright bị đóng hoặc bằng None.")
+            return False, "Phiên đăng nhập Gemini không hợp lệ - Trình duyệt bị đóng", "\n".join(dev_logs)
 
-        # 1. Kiểm tra sự xuất hiện của nút "Đăng nhập" (Sign in)
+        try:
+            current_url = self._page.url
+            page_title = self._page.title()
+        except Exception as e:
+            current_url = f"Error getting URL: {e}"
+            page_title = "Unknown"
+
+        dev_logs.append(f"\n- URL hiện tại sau khi nạp: {current_url}")
+        dev_logs.append(f"- Tiêu đề trang: {page_title}")
+
+        # 1. ƯU TIÊN HÀNG ĐẦU: Kiểm tra sự xuất hiện của ô nhập prompt
+        if self.check_login_status():
+            dev_logs.append("\n✅ KẾT QUẢ: Tìm thấy ô nhập prompt thành công. Session hoạt động bình thường!")
+            return True, "Đã xác nhận phiên đăng nhập Gemini hợp lệ.", "\n".join(dev_logs)
+
+        # 2. Thử chờ 3 giây để trang nạp xong các thành phần Web App
+        dev_logs.append("\n⏳ Chưa thấy ô nhập liệu, đang chờ thêm 3 giây để trang nạp xong...")
+        self._page.wait_for_timeout(3000)
+
+        if self.check_login_status():
+            dev_logs.append("\n✅ KẾT QUẢ (Sau khi chờ 3s): Tìm thấy ô nhập prompt thành công.")
+            return True, "Đã xác nhận phiên đăng nhập Gemini hợp lệ.", "\n".join(dev_logs)
+
+        # 3. CHỈ KHI KHÔNG TÌM THẤY Ô NHẬP PROMPT -> Mới kiểm tra xem có phải chưa đăng nhập hay không
+        if "accounts.google.com" in current_url:
+            dev_logs.append("\n❌ KẾT QUẢ: Phát hiện bị chuyển hướng tới trang Đăng nhập Google (accounts.google.com).")
+            dev_logs.append("💡 NGUYÊN NHÂN: Profile chưa được đăng nhập Google hoặc file Cookies bị Chrome đang mở khóa.")
+            dev_logs.append("💡 HƯỚNG XỬ LÝ: Vui lòng ĐÓNG GOOGLE CHROME trên máy rồi bấm Trích Highlight lại, hoặc dùng nút '🌐 Mở Gemini Web' để đăng nhập 1 lần.")
+            user_msg = "Phiên đăng nhập Gemini không hợp lệ - Bị chuyển hướng ra trang Đăng nhập Google"
+            return False, user_msg, "\n".join(dev_logs)
+
+        # Các selector Đăng nhập chuẩn xác
         signin_selectors = [
-            'a[href*="accounts.google.com"]',
-            'button:has-text("Đăng nhập")',
-            'a:has-text("Đăng nhập")',
-            'button:has-text("Sign in")',
-            'a:has-text("Sign in")',
-            '.gb_Ia',  # Google Account Sign-in button class
+            'a[href*="accounts.google.com/ServiceLogin"]',
+            'a[href*="accounts.google.com/v3/signin"]',
+            'a[href*="accounts.google.com/InteractiveLogin"]',
+            'a.gb_Ia[href*="accounts.google.com"]',
         ]
+        found_signin = None
         for sel in signin_selectors:
             try:
                 loc = self._page.locator(sel)
                 if loc.count() > 0 and loc.first.is_visible():
-                    return False, "Phiên đăng nhập Gemini không hợp lệ - cần đăng nhập lại profile"
+                    found_signin = sel
+                    break
             except Exception:
                 pass
 
-        # 2. Kiểm tra sự xuất hiện của ô nhập prompt
-        if self.check_login_status():
-            return True, "Đã xác nhận phiên đăng nhập Gemini hợp lệ."
+        if found_signin:
+            dev_logs.append(f"\n❌ KẾT QUẢ: Phát hiện nút Đăng nhập trên trang Gemini Web (Selector: '{found_signin}').")
+            dev_logs.append("💡 NGUYÊN NHÂN: Profile chưa đăng nhập Google hoặc Cookies bị khóa do Chrome đang chạy.")
+            dev_logs.append("💡 HƯỚNG XỬ LÝ: Hãy ĐÓNG CHROME trên máy hoặc chọn Profile có email Google đã đăng nhập.")
+            user_msg = f"Phiên đăng nhập Gemini không hợp lệ - Chưa đăng nhập Google ('{found_signin}')"
+            return False, user_msg, "\n".join(dev_logs)
 
-        # Thử chờ 2.5 giây nếu trang đang nạp chậm
-        self._page.wait_for_timeout(2500)
+        # Nếu không thấy cả nút đăng nhập lẫn ô prompt
+        try:
+            body_text = self._page.locator('body').inner_text()[:400].replace('\n', ' ')
+            dev_logs.append(f"\n- Trích văn bản trang (400 ký tự đầu): {body_text}")
+        except Exception:
+            pass
 
-        # Kiểm tra lại nút Đăng nhập sau khi chờ
-        for sel in signin_selectors:
-            try:
-                loc = self._page.locator(sel)
-                if loc.count() > 0 and loc.first.is_visible():
-                    return False, "Phiên đăng nhập Gemini không hợp lệ - cần đăng nhập lại profile"
-            except Exception:
-                pass
-
-        if self.check_login_status():
-            return True, "Đã xác nhận phiên đăng nhập Gemini hợp lệ."
-
-        return False, "Phiên đăng nhập Gemini không hợp lệ - cần đăng nhập lại profile"
+        dev_logs.append("\n❌ KẾT QUẢ: Không tìm thấy ô nhập prompt lẫn nút Đăng nhập. Có thể mạng chậm hoặc giao diện Gemini bị đổi.")
+        dev_logs.append("💡 HƯỚNG XỬ LÝ: Thử bỏ tích 'Chạy ẩn trình duyệt (Headless)' để quan sát trực tiếp màn hình Chrome.")
+        user_msg = "Phiên đăng nhập Gemini không hợp lệ - Không thấy ô nhập liệu Gemini Web"
+        return False, user_msg, "\n".join(dev_logs)
 
     def check_login_status(self):
         """

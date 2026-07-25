@@ -124,6 +124,7 @@ class GeminiWebBatchWorker:
         enable_limit = self.options.get('enable_limit', True)
         max_minutes = self.options.get('max_minutes', 2.0)
         user_data_dir = self.options.get('user_data_dir', get_default_user_data_dir())
+        profile_folder = self.options.get('profile_folder', 'Default')
         profile_label = self.options.get('profile_label', '')
 
         log_msg = f"Bắt đầu kết nối trình duyệt Gemini Web (Headless: {headless}, Timeout: {timeout}s)"
@@ -135,14 +136,15 @@ class GeminiWebBatchWorker:
         # Khởi tạo controller
         self.controller = GeminiWebController(
             user_data_dir=user_data_dir,
+            profile_folder=profile_folder,
             headless=headless,
             timeout_seconds=timeout
         )
 
-        ok, msg = self.controller.start()
+        ok, msg, dev_log = self.controller.start()
         if not ok:
             self._safe_log(f"❌ {msg}", 'error')
-            self._safe_error_log("Khởi động Trình duyệt", msg, 'error')
+            self._safe_error_log("Khởi động Trình duyệt", f"{msg}\n\n{dev_log}", 'error')
             self._finish()
             return
 
