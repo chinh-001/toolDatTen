@@ -244,9 +244,9 @@ def parse_link_highlight_input(raw_text):
     Phân tách linh hoạt dữ liệu thô nhập vào thành danh sách entries chuẩn.
     
     Hỗ trợ các dạng input:
-    1. Xen kẽ dòng: Dòng 1 Link video, Dòng 2 Chuỗi highlight.
-    2. Tab-separated (từ Excel): Cột 1 Tiêu đề (optional), Cột 2 Link, Cột 3 Highlight.
-    3. Cặp dòng rác / rỗng được bỏ qua tự động.
+    1. Cụm 3 dòng: Dòng 1 Tiêu đề, Dòng 2 Link video, Dòng 3 Chuỗi highlight.
+    2. Cụm 2 dòng: Dòng 1 Link video, Dòng 2 Chuỗi highlight.
+    3. Tab-separated (từ Excel / Google Sheets): Cột 1 Tiêu đề (optional), Cột 2 Link, Cột 3 Highlight.
     """
     if not raw_text or not raw_text.strip():
         return []
@@ -292,13 +292,20 @@ def parse_link_highlight_input(raw_text):
         if entries:
             return entries
 
-    # Bước 2: Phân tách dạng Xen kẽ dòng (Line URL -> Line Highlight)
+    # Bước 2: Phân tách dạng Dòng liên tiếp (Hỗ trợ 3 dòng: Title -> URL -> Highlight, hoặc 2 dòng: URL -> Highlight)
     i = 0
     while i < len(lines):
         line = lines[i]
         url = _extract_url(line)
         
         if url:
+            # Tìm tiêu đề ở dòng ngay trước đó (nếu có và dòng trước đó không phải URL hay timestamp)
+            title = ""
+            if i > 0:
+                prev_line = lines[i - 1]
+                if not _extract_url(prev_line) and not _is_highlight_line(prev_line):
+                    title = prev_line
+
             highlight_raw = ""
             # Kiểm tra dòng tiếp theo có phải highlight timestamp hay không
             if i + 1 < len(lines):
@@ -310,7 +317,7 @@ def parse_link_highlight_input(raw_text):
             hl_info = repair_and_clean_highlight(highlight_raw)
             entries.append({
                 'index': len(entries) + 1,
-                'title': _title_from_url(url),
+                'title': title if title else _title_from_url(url),
                 'url': url,
                 'highlight_raw': highlight_raw,
                 'highlight_clean': hl_info['cleaned_str'],
@@ -325,7 +332,7 @@ def parse_link_highlight_input(raw_text):
 
 
 def _title_from_url(url):
-    """Tạo tiêu đề ngắn từ URL."""
+    """Tạo tiêu đề ngắn từ URL nếu không có tiêu đề thô."""
     path = url.split('?')[0].split('#')[0]
     parts = path.rstrip('/').split('/')
     if parts and parts[-1]:
@@ -355,20 +362,32 @@ def format_entries_to_text(entries):
     return "\n\n".join(blocks)
 
 
-def format_entries_to_tsv(entries, num_cols=2):
+def format_entries_to_tsv(entries, num_cols=2, include_header=True):
     """
     Xuất danh sách entries thành dạng TSV (Tab-separated) chuẩn cho Excel / Google Sheets.
+    num_cols:
+      - 2: Link Video \t Highlight Video
+      - 3: Tiêu đề \t Link Video \t Highlight Video
+      - 5: Tiêu đề \t Link Video \t Highlight Video \t Số đoạn \t Tổng thời lượng
     """
     output = io.StringIO()
     writer = csv.writer(output, delimiter='\t', lineterminator='\n')
     
     if num_cols == 2:
-        writer.writerow(["Link Video", "Highlight Video"])
+        if include_header:
+            writer.writerow(["Link Video", "Highlight Video"])
         for item in entries:
             hl = item['highlight_clean'] if item['highlight_clean'] else item['highlight_raw']
             writer.writerow([item['url'], hl])
+    elif num_cols == 3:
+        if include_header:
+            writer.writerow(["Tiêu đề", "Link Video", "Highlight Video"])
+        for item in entries:
+            hl = item['highlight_clean'] if item['highlight_clean'] else item['highlight_raw']
+            writer.writerow([item['title'], item['url'], hl])
     else:
-        writer.writerow(["Tiêu đề", "Link Video", "Highlight Video", "Số đoạn", "Tổng thời lượng"])
+        if include_header:
+            writer.writerow(["Tiêu đề", "Link Video", "Highlight Video", "Số đoạn", "Tổng thời lượng"])
         for item in entries:
             hl = item['highlight_clean'] if item['highlight_clean'] else item['highlight_raw']
             writer.writerow([

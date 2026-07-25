@@ -65,7 +65,7 @@ class HighlightFormatterTab(ttk.Frame):
 
         lbl_hint = ttk.Label(
             parent,
-            text="Dán dữ liệu thô gồm link video và highlight (Ví dụ: Dòng 1 Link, Dòng 2 Highlight):",
+            text="Dán dữ liệu thô gồm Tiêu đề, Link video & Highlight (Hỗ trợ cụm 3 dòng: Tiêu đề -> Link -> Highlight, hoặc dán từ Excel):",
             font=('Segoe UI', 9, 'bold')
         )
         lbl_hint.pack(anchor='w', pady=(0, 4))
@@ -187,14 +187,14 @@ class HighlightFormatterTab(ttk.Frame):
         btn_copy_3col = ttk.Button(
             tb,
             text="📋 Copy 3 Cột (Tiêu đề | Link | Highlight)",
+            style='Action.TButton',
             command=lambda: self._copy_excel_tsv(num_cols=3)
         )
         btn_copy_3col.pack(side='right', padx=(6, 0))
 
         btn_copy_2col = ttk.Button(
             tb,
-            text="📋 Copy 2 Cột (Link | Highlight) Excel",
-            style='Action.TButton',
+            text="📋 Copy 2 Cột (Link | Highlight)",
             command=lambda: self._copy_excel_tsv(num_cols=2)
         )
         btn_copy_2col.pack(side='right')
