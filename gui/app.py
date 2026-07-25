@@ -12,6 +12,7 @@ from gui.tab_highlight import HighlightTab
 from gui.tab_gemini_web import GeminiWebTab
 from gui.tab_duration_checker import DurationCheckerTab
 from gui.tab_highlight_duration import HighlightDurationTab
+from gui.tab_highlight_formatter import HighlightFormatterTab
 from utils.constants import WINDOW_WIDTH, WINDOW_HEIGHT, WINDOW_TITLE
 
 
@@ -122,12 +123,14 @@ class App(tk.Tk):
         self.tab_gemini_web = GeminiWebTab(self.notebook, log_panel=self.log_panel)
         self.tab_duration_checker = DurationCheckerTab(self.notebook, log_panel=self.log_panel)
         self.tab_highlight_duration = HighlightDurationTab(self.notebook, log_panel=self.log_panel)
+        self.tab_highlight_formatter = HighlightFormatterTab(self.notebook, log_panel=self.log_panel)
         
         self.notebook.add(self.tab_rename, text="📁 Đổi Tên Video")
         self.notebook.add(self.tab_highlight, text="🎬 Trích Highlight AI (API)")
         self.notebook.add(self.tab_gemini_web, text="🌐 Trích Highlight Gemini Web")
         self.notebook.add(self.tab_duration_checker, text="⏱️ Check File Video")
         self.notebook.add(self.tab_highlight_duration, text="⏱️ Thời Lượng Highlight")
+        self.notebook.add(self.tab_highlight_formatter, text="📊 Trình Bày Link & Highlight")
         
         # Log khởi động
         self.log_panel.log("Hệ thống khởi động thành công. Sẵn sàng hoạt động.")
