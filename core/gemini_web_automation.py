@@ -1,5 +1,5 @@
 """
-Gemini Web Automation Module - Quản lý tương tác với trình duyệt qua Playwright.
+Gemini Web Automation Module - Quản lý tương tác với trình duyệt qua Patchright (stealth fork của Playwright).
 Điều khiển Gemini Web (https://gemini.google.com/app) để gửi prompt và trích xuất dữ liệu trả về.
 """
 
@@ -8,6 +8,18 @@ import sys
 import time
 import threading
 from core.profile_copier import prepare_isolated_chrome_profile
+from core.stealth_config import get_stealth_launch_args, get_stealth_ignore_args, get_stealth_init_script
+from core.remote_debugger import ensure_cdp_chrome_ready, is_port_listening
+
+
+def _import_sync_playwright():
+    """Import sync_playwright từ Patchright (ưu tiên) hoặc fallback về Playwright."""
+    try:
+        from patchright.sync_api import sync_playwright
+        return sync_playwright, "patchright"
+    except ImportError:
+        from playwright.sync_api import sync_playwright
+        return sync_playwright, "playwright"
 
 
 def get_default_user_data_dir():
@@ -46,16 +58,17 @@ def find_system_chrome_path():
     return None
 
 
-def open_interactive_browser(user_data_dir=None, profile_folder="Default", headless=False, chrome_path=None):
+def open_interactive_browser(user_data_dir=None, profile_folder="Default", headless=False, chrome_path=None, port=9222):
     """
-    Mở trình duyệt thực để người dùng xem hoặc đăng nhập tài khoản Google.
+    Mở trình duyệt thực bằng Remote Debugging Port (CDP) để người dùng đăng nhập tài khoản Google.
     Chạy ở thread riêng để không làm treo UI chính.
 
     Args:
         user_data_dir (str, optional): Thư mục User Data hoặc app profile.
         profile_folder (str): Tên thư mục profile ("Default", "Profile 1", ...).
-        headless (bool): Bật/tắt chế độ ẩn. Mặc định False để người dùng thấy giao diện.
-        chrome_path (str, optional): Đường dẫn file thực thi Chrome nếu có.
+        headless (bool): Bật/tắt chế độ ẩn.
+        chrome_path (str, optional): Đường dẫn file thực thi Chrome.
+        port (int): Cổng remote debugging (mặc định 9222).
     """
     if user_data_dir is None:
         user_data_dir = get_default_user_data_dir()
@@ -68,59 +81,53 @@ def open_interactive_browser(user_data_dir=None, profile_folder="Default", headl
             from core.profile_manager import is_system_chrome_running
             local_state_exists = os.path.exists(os.path.join(user_data_dir, "Local State"))
 
-            # Nếu là Chrome hệ thống và Chrome KHÔNG chạy -> Mở trực tiếp thư mục gốc không qua temp
             if local_state_exists and not is_system_chrome_running():
                 target_user_data = user_data_dir
                 target_folder = profile_folder
-                skipped_files = []
             elif local_state_exists:
-                target_user_data, target_folder, skipped_files = prepare_isolated_chrome_profile(user_data_dir, profile_folder)
+                target_user_data, target_folder, _ = prepare_isolated_chrome_profile(user_data_dir, profile_folder)
             else:
-                # App Profile riêng biệt
                 target_user_data = user_data_dir
                 target_folder = "Default"
-                skipped_files = []
 
             _cleanup_browser_locks(target_user_data)
 
-            from playwright.sync_api import sync_playwright
-            with sync_playwright() as p:
-                launch_args = [
-                    f"--profile-directory={target_folder}",
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-first-run",
-                    "--no-default-browser-check",
-                    "--disable-search-engine-choice-screen",
-                    "--disable-features=LockProfileCookieDatabase",
-                    "--disable-infobars",
-                ]
-                kwargs = {
-                    "user_data_dir": target_user_data,
-                    "headless": headless,
-                    "args": launch_args,
-                    "channel": "chrome",
-                    "ignore_default_args": ["--enable-automation", "--disable-sync"],
-                }
-                if chrome_path and os.path.exists(chrome_path):
-                    kwargs["executable_path"] = chrome_path
+            # Khởi chạy Chrome thực bằng Remote Debugging CDP
+            ok_cdp, msg_cdp, _ = ensure_cdp_chrome_ready(
+                chrome_path=chrome_path,
+                user_data_dir=target_user_data,
+                profile_folder=target_folder,
+                port=port,
+                headless=headless
+            )
 
-                try:
-                    context = p.chromium.launch_persistent_context(**kwargs)
-                except Exception:
-                    kwargs.pop("channel", None)
+            sync_playwright_cls, _ = _import_sync_playwright()
+            with sync_playwright_cls() as p:
+                if ok_cdp:
+                    browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
+                    context = browser.contexts[0] if browser.contexts else browser.new_context()
+                else:
+                    launch_args = get_stealth_launch_args(target_folder)
+                    kwargs = {
+                        "user_data_dir": target_user_data,
+                        "headless": headless,
+                        "args": launch_args,
+                        "ignore_default_args": get_stealth_ignore_args(),
+                    }
+                    if chrome_path and os.path.exists(chrome_path):
+                        kwargs["executable_path"] = chrome_path
                     context = p.chromium.launch_persistent_context(**kwargs)
 
-                # Ẩn cờ navigator.webdriver để Google Accounts không báo lỗi "Trình duyệt không an toàn"
-                context.add_init_script("""
-                    Object.defineProperty(navigator, 'webdriver', {
-                        get: () => undefined
-                    });
-                """)
+                stealth_js = get_stealth_init_script()
+                context.add_init_script(stealth_js)
 
                 page = context.pages[0] if context.pages else context.new_page()
+                try:
+                    page.evaluate(stealth_js)
+                except Exception:
+                    pass
                 page.goto("https://gemini.google.com/app", timeout=60000)
                 
-                # Giữ trình duyệt mở cho tới khi người dùng đóng tất cả cửa sổ
                 while context.pages:
                     time.sleep(1)
         except Exception as e:
@@ -130,9 +137,9 @@ def open_interactive_browser(user_data_dir=None, profile_folder="Default", headl
 
 
 class GeminiWebController:
-    """Bộ điều khiển Playwright tương tác trực tiếp với Gemini Web."""
+    """Bộ điều khiển Playwright tương tác trực tiếp với Gemini Web qua Remote Debugging (CDP)."""
 
-    def __init__(self, user_data_dir=None, profile_folder="Default", headless=True, timeout_seconds=60, chrome_path=None):
+    def __init__(self, user_data_dir=None, profile_folder="Default", headless=True, timeout_seconds=60, chrome_path=None, cdp_port=9222):
         """
         Khởi tạo bộ điều khiển.
 
@@ -142,6 +149,7 @@ class GeminiWebController:
             headless (bool): Chạy ẩn trình duyệt hay hiện giao diện.
             timeout_seconds (int): Thời gian chờ tối đa cho mỗi phản hồi (giây).
             chrome_path (str, optional): Đường dẫn file thực thi Chrome.
+            cdp_port (int): Cổng remote debugging CDP.
         """
         self.raw_user_data_dir = user_data_dir or get_default_user_data_dir()
         self.profile_folder = profile_folder or "Default"
@@ -149,16 +157,18 @@ class GeminiWebController:
         self.headless = headless
         self.timeout_seconds = timeout_seconds
         self.chrome_path = chrome_path or find_system_chrome_path()
+        self.cdp_port = cdp_port
         self.skipped_files = []
 
         self._playwright = None
+        self._browser = None
         self._context = None
         self._page = None
         self._is_running = False
 
     def start(self):
         """
-        Khởi chạy trình duyệt và mở trang Gemini Web.
+        Khởi chạy trình duyệt qua Remote Debugging Port (CDP) và mở trang Gemini Web.
 
         Returns:
             tuple: (bool, str, str) -> (Thành công hay không, Thông báo người dùng, Log dev chi tiết)
@@ -167,61 +177,68 @@ class GeminiWebController:
             from core.profile_manager import is_system_chrome_running
             local_state_exists = os.path.exists(os.path.join(self.raw_user_data_dir, "Local State"))
 
-            # Nếu là Chrome hệ thống và Chrome KHÔNG đang mở -> Dùng trực tiếp 100% chính xác
             if local_state_exists and not is_system_chrome_running():
                 self.user_data_dir = self.raw_user_data_dir
                 target_folder = self.profile_folder
                 self.skipped_files = []
             elif local_state_exists:
-                # Nếu Chrome đang mở -> Dùng profile cách ly
                 isolated_dir, folder_name, skipped_files = prepare_isolated_chrome_profile(self.raw_user_data_dir, self.profile_folder)
                 self.user_data_dir = isolated_dir
                 target_folder = folder_name
                 self.skipped_files = skipped_files
             else:
-                # App Profile riêng biệt
                 self.user_data_dir = self.raw_user_data_dir
                 target_folder = "Default"
                 self.skipped_files = []
 
             _cleanup_browser_locks(self.user_data_dir)
 
-            from playwright.sync_api import sync_playwright
-            self._playwright = sync_playwright().start()
+            # Ưu tiên 1: Khởi chạy Chrome thực dưới dạng Remote Debugging CDP
+            ok_cdp, msg_cdp, _ = ensure_cdp_chrome_ready(
+                chrome_path=self.chrome_path,
+                user_data_dir=self.user_data_dir,
+                profile_folder=target_folder,
+                port=self.cdp_port,
+                headless=self.headless
+            )
 
-            launch_args = [
-                f"--profile-directory={target_folder}",
-                "--disable-blink-features=AutomationControlled",
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--disable-search-engine-choice-screen",
-                "--disable-features=LockProfileCookieDatabase",
-                "--disable-infobars",
-            ]
-            kwargs = {
-                "user_data_dir": self.user_data_dir,
-                "headless": self.headless,
-                "args": launch_args,
-                "channel": "chrome",
-                "ignore_default_args": ["--enable-automation", "--disable-sync"],
-            }
-            if self.chrome_path and os.path.exists(self.chrome_path):
-                kwargs["executable_path"] = self.chrome_path
+            sync_playwright_cls, self._engine_name = _import_sync_playwright()
+            self._playwright = sync_playwright_cls().start()
 
-            try:
-                self._context = self._playwright.chromium.launch_persistent_context(**kwargs)
-            except Exception:
-                kwargs.pop("channel", None)
-                self._context = self._playwright.chromium.launch_persistent_context(**kwargs)
+            if ok_cdp:
+                try:
+                    self._browser = self._playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{self.cdp_port}")
+                    self._context = self._browser.contexts[0] if self._browser.contexts else self._browser.new_context()
+                except Exception as e_cdp:
+                    ok_cdp = False
 
-            # Ẩn cờ navigator.webdriver để Google Accounts không báo lỗi "Trình duyệt không an toàn"
-            self._context.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', {
-                    get: () => undefined
-                });
-            """)
+            if not ok_cdp:
+                launch_args = get_stealth_launch_args(target_folder)
+                kwargs = {
+                    "user_data_dir": self.user_data_dir,
+                    "headless": self.headless,
+                    "args": launch_args,
+                    "channel": "chrome",
+                    "ignore_default_args": get_stealth_ignore_args(),
+                }
+                if self.chrome_path and os.path.exists(self.chrome_path):
+                    kwargs["executable_path"] = self.chrome_path
+
+                try:
+                    self._context = self._playwright.chromium.launch_persistent_context(**kwargs)
+                except Exception:
+                    kwargs.pop("channel", None)
+                    self._context = self._playwright.chromium.launch_persistent_context(**kwargs)
+
+            # Inject stealth script toàn diện chống phát hiện automation
+            stealth_js = get_stealth_init_script()
+            self._context.add_init_script(stealth_js)
 
             self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
+            try:
+                self._page.evaluate(stealth_js)
+            except Exception:
+                pass
             
             # Đặt timeout chuẩn cho các thao tác
             self._page.set_default_timeout(15000)
@@ -237,7 +254,7 @@ class GeminiWebController:
                 return False, user_msg, dev_log
 
             self._is_running = True
-            return True, "Kết nối Gemini Web thành công.", dev_log
+            return True, "Kết nối Gemini Web thành công qua Remote Debugging CDP.", dev_log
         except Exception as e:
             import traceback
             dev_log = f"Exception khi khởi chạy Playwright:\n{traceback.format_exc()}"
@@ -613,6 +630,13 @@ class GeminiWebController:
             if self._context:
                 self._context.close()
                 self._context = None
+        except Exception:
+            pass
+
+        try:
+            if self._browser:
+                self._browser.close()
+                self._browser = None
         except Exception:
             pass
 

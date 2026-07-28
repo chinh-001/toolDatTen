@@ -27,25 +27,91 @@ def get_temp_profiles_base_dir():
 
 def safe_copy_file(src_path, dst_path, skipped_files=None, rel_path=""):
     """
-    Sao chép file an toàn. Nếu file bị Chrome khóa exclusively, thử đọc luồng nhị phân.
-    Nếu vẫn không copy được, ghi nhận file vào skipped_files.
+    Sao chép file an toàn với nhiều tầng fallback.
+    Nếu file bị Chrome khóa exclusively, thử các phương pháp sau theo thứ tự:
+    1. shutil.copy2 (chuẩn Python)
+    2. Đọc nhị phân trực tiếp (shared mode)
+    3. Win32 API kernel32.CopyFileW (bypass Python file locking)
     """
+    # Tầng 1: Phương pháp chuẩn Python
     try:
         shutil.copy2(src_path, dst_path)
         return True
     except (PermissionError, OSError):
         pass
 
-    # Thử đọc trực tiếp với shared mode
+    # Tầng 2: Thử đọc trực tiếp với shared mode
     try:
         with open(src_path, "rb") as fsrc:
             with open(dst_path, "wb") as fdst:
                 shutil.copyfileobj(fsrc, fdst, length=64 * 1024)
         return True
+    except (PermissionError, OSError):
+        pass
+
+    # Tầng 3: Win32 API - kernel32.CopyFileW (hoạt động ở tầng OS, có thể copy file bị lock)
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        # CopyFileW(lpExistingFileName, lpNewFileName, bFailIfExists=False)
+        # bFailIfExists=False → ghi đè nếu file đích đã tồn tại
+        result = kernel32.CopyFileW(str(src_path), str(dst_path), False)
+        if result != 0:
+            return True
+    except Exception:
+        pass
+
+    # Tầng 4: Win32 API - CreateFile với FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.windll.kernel32
+
+        GENERIC_READ = 0x80000000
+        FILE_SHARE_READ = 0x00000001
+        FILE_SHARE_WRITE = 0x00000002
+        FILE_SHARE_DELETE = 0x00000004
+        OPEN_EXISTING = 3
+        FILE_ATTRIBUTE_NORMAL = 0x80
+        INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+        # Mở file nguồn với tất cả sharing flags
+        h_src = kernel32.CreateFileW(
+            str(src_path),
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            None,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            None
+        )
+
+        if h_src == INVALID_HANDLE_VALUE:
+            raise OSError("Cannot open source file with CreateFileW")
+
+        try:
+            # Đọc toàn bộ nội dung file
+            file_size = kernel32.GetFileSize(h_src, None)
+            if file_size > 0 and file_size < 100 * 1024 * 1024:  # Giới hạn 100MB
+                buffer = ctypes.create_string_buffer(file_size)
+                bytes_read = wintypes.DWORD(0)
+                kernel32.ReadFile(h_src, buffer, file_size, ctypes.byref(bytes_read), None)
+
+                if bytes_read.value > 0:
+                    with open(dst_path, "wb") as fdst:
+                        fdst.write(buffer.raw[:bytes_read.value])
+                    return True
+        finally:
+            kernel32.CloseHandle(h_src)
     except Exception as e:
         if skipped_files is not None and rel_path:
             skipped_files.append(f"{rel_path} ({type(e).__name__})")
         return False
+
+    if skipped_files is not None and rel_path:
+        skipped_files.append(f"{rel_path} (AllMethodsFailed)")
+    return False
 
 
 def copy_directory_selectively(src_dir, dst_dir, skipped_files=None, base_src_dir=None):

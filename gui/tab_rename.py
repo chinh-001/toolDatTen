@@ -10,7 +10,9 @@ import threading
 from core.scanner import scan_video_folder
 from core.matcher import match_all_titles
 from core.renamer import build_rename_plan, execute_renames
+from core.video_name_extractor import quick_export_folder_to_txt
 from gui.widgets import ResultTable
+from gui.dialog_extract_names import ExtractVideoNamesDialog
 from utils.constants import (
     DEFAULT_MATCH_THRESHOLD, DEFAULT_START_NUMBER,
     DEFAULT_SEPARATOR, DEFAULT_CODE_PREFIX,
@@ -100,40 +102,47 @@ class RenameTab(ttk.Frame):
         ttk.Button(folder_frame, text="Chọn...", command=self._pick_folder).pack(
             side='right', padx=(4, 0))
 
+        # Quick Export TXT button
+        ttk.Button(
+            frame,
+            text="📄 Trích & Xuất file .TXT tên video",
+            command=self._on_quick_export_txt
+        ).grid(row=2, column=0, sticky='ew', pady=(0, 6))
+
         # Separator line
         ttk.Separator(frame, orient='horizontal').grid(
-            row=2, column=0, sticky='ew', pady=4)
+            row=3, column=0, sticky='ew', pady=4)
 
         # Preview format
         ttk.Label(frame, text="📝 Format: {mã}{số}{dấu phân cách}{tên gốc}",
                   font=('Segoe UI', 8, 'italic')).grid(
-            row=3, column=0, sticky='w', pady=(0, 4))
+            row=4, column=0, sticky='w', pady=(0, 4))
 
         # Code prefix
         ttk.Label(frame, text="Mã (prefix):").grid(
-            row=4, column=0, sticky='w', pady=2)
+            row=5, column=0, sticky='w', pady=2)
         ttk.Entry(frame, textvariable=self._code_prefix, width=15).grid(
-            row=5, column=0, sticky='ew', pady=(0, 4))
+            row=6, column=0, sticky='ew', pady=(0, 4))
 
         # Separator
         ttk.Label(frame, text="Dấu phân cách:").grid(
-            row=6, column=0, sticky='w', pady=2)
+            row=7, column=0, sticky='w', pady=2)
         ttk.Entry(frame, textvariable=self._separator, width=15).grid(
-            row=7, column=0, sticky='ew', pady=(0, 4))
+            row=8, column=0, sticky='ew', pady=(0, 4))
 
         # Start number
         ttk.Label(frame, text="Bắt đầu từ số:").grid(
-            row=8, column=0, sticky='w', pady=2)
+            row=9, column=0, sticky='w', pady=2)
         ttk.Spinbox(frame, from_=0, to=9999, textvariable=self._start_number,
                     width=10).grid(
-            row=9, column=0, sticky='w', pady=(0, 4))
+            row=10, column=0, sticky='w', pady=(0, 4))
 
         # Threshold
         ttk.Label(frame, text="Ngưỡng khớp (%):").grid(
-            row=10, column=0, sticky='w', pady=2)
+            row=11, column=0, sticky='w', pady=2)
 
         threshold_frame = ttk.Frame(frame)
-        threshold_frame.grid(row=11, column=0, sticky='ew', pady=(0, 4))
+        threshold_frame.grid(row=12, column=0, sticky='ew', pady=(0, 4))
 
         self._threshold_label = ttk.Label(threshold_frame,
                                           text=f"{self._threshold.get()}%",
@@ -151,15 +160,15 @@ class RenameTab(ttk.Frame):
 
         # Live preview of format
         ttk.Separator(frame, orient='horizontal').grid(
-            row=12, column=0, sticky='ew', pady=4)
+            row=13, column=0, sticky='ew', pady=4)
 
         ttk.Label(frame, text="Xem trước tên:", font=('Segoe UI', 8)).grid(
-            row=13, column=0, sticky='w', pady=2)
+            row=14, column=0, sticky='w', pady=2)
 
         self._preview_label = ttk.Label(
             frame, text="", font=('Segoe UI', 9, 'italic'),
             foreground='#3498db')
-        self._preview_label.grid(row=14, column=0, sticky='w')
+        self._preview_label.grid(row=15, column=0, sticky='w')
 
         # Bind changes to update preview
         self._code_prefix.trace_add('write', self._update_format_preview)
@@ -188,6 +197,12 @@ class RenameTab(ttk.Frame):
             state='disabled',
         )
         self.btn_rename.pack(side='left', padx=(0, 8))
+
+        self.btn_extract = ttk.Button(
+            btn_frame, text="📋 Xem trước & Xuất .TXT Tên Video",
+            command=self._on_extract_video_names,
+        )
+        self.btn_extract.pack(side='left', padx=(0, 8))
 
         self.btn_clear = ttk.Button(
             btn_frame, text="🗑 Xóa tất cả",
@@ -219,6 +234,38 @@ class RenameTab(ttk.Frame):
         if folder:
             self._folder_path.set(folder)
             self.log_panel.log(f"Đã chọn thư mục: {folder}")
+
+    def _on_quick_export_txt(self):
+        """Mở dialog xem trước và trích xuất danh sách tên video từ thư mục."""
+        folder = self._folder_path.get().strip()
+        if not folder:
+            folder = filedialog.askdirectory(title="Chọn thư mục chứa video để trích tên", parent=self)
+            if not folder:
+                return
+            self._folder_path.set(folder)
+
+        ExtractVideoNamesDialog(
+            self,
+            initial_folder=folder,
+            on_apply_titles=self._set_titles_text,
+            log_panel=self.log_panel
+        )
+
+    def _on_extract_video_names(self):
+        """Mở dialog trích xuất danh sách tên video từ thư mục."""
+        folder = self._folder_path.get()
+        ExtractVideoNamesDialog(
+            self,
+            initial_folder=folder,
+            on_apply_titles=self._set_titles_text,
+            log_panel=self.log_panel
+        )
+
+    def _set_titles_text(self, text):
+        """Nạp danh sách tiêu đề vào khung Text."""
+        self.title_text.delete('1.0', 'end')
+        self.title_text.insert('1.0', text)
+        self.log_panel.log("Đã cập nhật danh sách tiêu đề.", 'info')
 
     def _on_threshold_change(self, value):
         """Cập nhật label khi thay đổi ngưỡng."""
